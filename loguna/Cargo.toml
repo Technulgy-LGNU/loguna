@@ -1,0 +1,17 @@
+[package]
+name = "loguna"
+version = "0.1.0"
+edition = "2021"
+description = "Parser library for RoboCup SSL log files"
+
+[dependencies]
+prost = "0.13"
+byteorder = "1"
+flate2 = "1"
+thiserror = "2"
+
+[build-dependencies]
+prost-build = "0.13"
+
+[dev-dependencies]
+tempfile = "3"
