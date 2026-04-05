@@ -1,5 +1,9 @@
 # loguna
 
+<p align="center">
+    <img src="assets/screenshot.png" alt="drawing" width="800"/>
+</p>
+
 A Rust library and TUI tool for working with RoboCup SSL log files. If you've
 ever stared at a `.log` or `.log.gz` file from an SSL game and wished you could
 just *read the thing*, this is for you.
