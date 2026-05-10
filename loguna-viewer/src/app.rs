@@ -334,7 +334,12 @@ fn increment_type_count(type_counts: &mut [(MessageId, usize)], message_id: Mess
     }
 }
 
-fn format_message_summary(message_id: MessageId, timestamp_ns: i64, payload_len: usize, base_ts: i64) -> String {
+fn format_message_summary(
+    message_id: MessageId,
+    timestamp_ns: i64,
+    payload_len: usize,
+    base_ts: i64,
+) -> String {
     let relative_ns = timestamp_ns - base_ts;
     let time_str = format_relative_time(relative_ns);
     format!(
