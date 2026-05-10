@@ -73,9 +73,7 @@ impl LogReader {
     /// decompressed transparently.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, ReadError> {
         let path = path.as_ref();
-        let compressed = path
-            .extension()
-            .map_or(false, |ext| ext == "gz");
+        let compressed = path.extension().map_or(false, |ext| ext == "gz");
 
         let file = File::open(path)?;
 

@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use loguna::proto::{
-    Referee, SslWrapperPacket, TrackerWrapperPacket,
     referee::{Command, Stage},
+    Referee, SslWrapperPacket, TrackerWrapperPacket,
 };
 use loguna::{LogReader, MessageId};
 use prost::Message;
@@ -72,15 +72,31 @@ pub fn run_stats(log_file: &Path) -> anyhow::Result<()> {
     println!();
     println!("Total messages: {total}");
     println!("Total payload:  {:.1} MB", total_bytes as f64 / 1_048_576.0);
-    println!("Duration:       {:.1}s ({:.1} min)", duration_s, duration_s / 60.0);
+    println!(
+        "Duration:       {:.1}s ({:.1} min)",
+        duration_s,
+        duration_s / 60.0
+    );
     println!();
     println!("Message counts:");
-    println!("  Vision2014:       {vision_count:>10}  ({:.1}%)", vision_count as f64 / total as f64 * 100.0);
+    println!(
+        "  Vision2014:       {vision_count:>10}  ({:.1}%)",
+        vision_count as f64 / total as f64 * 100.0
+    );
     if vision2010_count > 0 {
-        println!("  Vision2010:       {vision2010_count:>10}  ({:.1}%)", vision2010_count as f64 / total as f64 * 100.0);
+        println!(
+            "  Vision2010:       {vision2010_count:>10}  ({:.1}%)",
+            vision2010_count as f64 / total as f64 * 100.0
+        );
     }
-    println!("  Referee2013:      {referee_count:>10}  ({:.1}%)", referee_count as f64 / total as f64 * 100.0);
-    println!("  VisionTracker:    {tracker_count:>10}  ({:.1}%)", tracker_count as f64 / total as f64 * 100.0);
+    println!(
+        "  Referee2013:      {referee_count:>10}  ({:.1}%)",
+        referee_count as f64 / total as f64 * 100.0
+    );
+    println!(
+        "  VisionTracker:    {tracker_count:>10}  ({:.1}%)",
+        tracker_count as f64 / total as f64 * 100.0
+    );
     if other_count > 0 {
         println!("  Other:            {other_count:>10}");
     }
@@ -189,8 +205,8 @@ pub fn run_referee(
         };
 
         if changes_only {
-            let changed = prev_command != Some(ref_msg.command)
-                || prev_stage != Some(ref_msg.stage);
+            let changed =
+                prev_command != Some(ref_msg.command) || prev_stage != Some(ref_msg.stage);
             if !changed {
                 continue;
             }
@@ -319,10 +335,7 @@ fn print_message_text(msg: &loguna::LogMessage, relative_s: f64) {
                     .unwrap_or_else(|_| format!("{}", r.stage));
                 println!(
                     "{time}  referee   stage={stage} cmd={cmd} {} {}-{} {}",
-                    r.yellow.name,
-                    r.yellow.score,
-                    r.blue.score,
-                    r.blue.name,
+                    r.yellow.name, r.yellow.score, r.blue.score, r.blue.name,
                 );
             }
         }
@@ -350,8 +363,11 @@ fn print_message_text(msg: &loguna::LogMessage, relative_s: f64) {
 
 fn print_message_full(msg: &loguna::LogMessage, relative_s: f64, detail: bool) {
     let time = format_time(relative_s);
-    println!("--- message at {time} ({relative_s:.6}s) type={} payload_bytes={} ---",
-        msg.message_id, msg.payload.len());
+    println!(
+        "--- message at {time} ({relative_s:.6}s) type={} payload_bytes={} ---",
+        msg.message_id,
+        msg.payload.len()
+    );
 
     match msg.message_id {
         MessageId::Vision2014 => {
@@ -365,30 +381,53 @@ fn print_message_full(msg: &loguna::LogMessage, relative_s: f64, detail: bool) {
                     println!("    balls: {}", det.balls.len());
                     if detail {
                         for (i, ball) in det.balls.iter().enumerate() {
-                            println!("      ball[{i}]: x={:.1} y={:.1} z={} conf={:.3}",
-                                ball.x, ball.y,
-                                ball.z.map(|z| format!("{z:.1}")).unwrap_or_else(|| "none".into()),
-                                ball.confidence);
+                            println!(
+                                "      ball[{i}]: x={:.1} y={:.1} z={} conf={:.3}",
+                                ball.x,
+                                ball.y,
+                                ball.z
+                                    .map(|z| format!("{z:.1}"))
+                                    .unwrap_or_else(|| "none".into()),
+                                ball.confidence
+                            );
                         }
                     }
                     println!("    robots_yellow: {}", det.robots_yellow.len());
                     if detail {
                         for robot in &det.robots_yellow {
-                            println!("      id={} x={:.1} y={:.1} orient={} conf={:.3}",
-                                robot.robot_id.map(|id| id.to_string()).unwrap_or_else(|| "?".into()),
-                                robot.x, robot.y,
-                                robot.orientation.map(|o| format!("{o:.3}")).unwrap_or_else(|| "?".into()),
-                                robot.confidence);
+                            println!(
+                                "      id={} x={:.1} y={:.1} orient={} conf={:.3}",
+                                robot
+                                    .robot_id
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_else(|| "?".into()),
+                                robot.x,
+                                robot.y,
+                                robot
+                                    .orientation
+                                    .map(|o| format!("{o:.3}"))
+                                    .unwrap_or_else(|| "?".into()),
+                                robot.confidence
+                            );
                         }
                     }
                     println!("    robots_blue: {}", det.robots_blue.len());
                     if detail {
                         for robot in &det.robots_blue {
-                            println!("      id={} x={:.1} y={:.1} orient={} conf={:.3}",
-                                robot.robot_id.map(|id| id.to_string()).unwrap_or_else(|| "?".into()),
-                                robot.x, robot.y,
-                                robot.orientation.map(|o| format!("{o:.3}")).unwrap_or_else(|| "?".into()),
-                                robot.confidence);
+                            println!(
+                                "      id={} x={:.1} y={:.1} orient={} conf={:.3}",
+                                robot
+                                    .robot_id
+                                    .map(|id| id.to_string())
+                                    .unwrap_or_else(|| "?".into()),
+                                robot.x,
+                                robot.y,
+                                robot
+                                    .orientation
+                                    .map(|o| format!("{o:.3}"))
+                                    .unwrap_or_else(|| "?".into()),
+                                robot.confidence
+                            );
                         }
                     }
                 }
@@ -461,8 +500,13 @@ fn print_message_full(msg: &loguna::LogMessage, relative_s: f64, detail: bool) {
                     if detail {
                         for (i, ball) in frame.balls.iter().enumerate() {
                             let p = &ball.pos;
-                            println!("    ball[{i}]: x={:.3} y={:.3} z={:.3} vis={:.2}",
-                                p.x, p.y, p.z, ball.visibility.unwrap_or(0.0));
+                            println!(
+                                "    ball[{i}]: x={:.3} y={:.3} z={:.3} vis={:.2}",
+                                p.x,
+                                p.y,
+                                p.z,
+                                ball.visibility.unwrap_or(0.0)
+                            );
                         }
                     }
                     println!("  robots: {}", frame.robots.len());
@@ -475,8 +519,13 @@ fn print_message_full(msg: &loguna::LogMessage, relative_s: f64, detail: bool) {
                                 Some(2) => "blue",
                                 _ => "unknown",
                             };
-                            println!("    {team} id={} x={:.3} y={:.3} orient={:.3}",
-                                rid.id.unwrap_or(0), p.x, p.y, robot.orientation);
+                            println!(
+                                "    {team} id={} x={:.3} y={:.3} orient={:.3}",
+                                rid.id.unwrap_or(0),
+                                p.x,
+                                p.y,
+                                robot.orientation
+                            );
                         }
                     }
                 }

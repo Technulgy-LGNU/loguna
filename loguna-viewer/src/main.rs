@@ -9,14 +9,17 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::prelude::*;
 
 use app::App;
 
 #[derive(Parser)]
-#[command(name = "ssl-log-viewer", about = "TUI viewer and CLI explorer for RoboCup SSL log files")]
+#[command(
+    name = "ssl-log-viewer",
+    about = "TUI viewer and CLI explorer for RoboCup SSL log files"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -120,7 +123,9 @@ fn main() -> anyhow::Result<()> {
             before,
             format,
             detail,
-        }) => cli::run_dump(&log_file, &types, limit, offset, after, before, &format, detail),
+        }) => cli::run_dump(
+            &log_file, &types, limit, offset, after, before, &format, detail,
+        ),
         Some(Commands::Referee {
             log_file,
             limit,
@@ -187,8 +192,12 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> anyhow::Resu
                 (KeyModifiers::SHIFT, KeyCode::BackTab) => app.prev_tab(),
                 (_, KeyCode::Char('f')) => app.toggle_filter_menu(),
                 (_, KeyCode::Char('1')) => app.toggle_message_filter(loguna::MessageId::Vision2014),
-                (_, KeyCode::Char('2')) => app.toggle_message_filter(loguna::MessageId::Referee2013),
-                (_, KeyCode::Char('3')) => app.toggle_message_filter(loguna::MessageId::VisionTracker2020),
+                (_, KeyCode::Char('2')) => {
+                    app.toggle_message_filter(loguna::MessageId::Referee2013)
+                }
+                (_, KeyCode::Char('3')) => {
+                    app.toggle_message_filter(loguna::MessageId::VisionTracker2020)
+                }
                 (_, KeyCode::Char('4')) => app.toggle_message_filter(loguna::MessageId::Vision2010),
                 _ => {}
             }

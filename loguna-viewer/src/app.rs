@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use prost::Message;
 use loguna::proto::{
-    Referee, SslWrapperPacket, TrackerWrapperPacket,
     referee::{Command, Stage},
+    Referee, SslWrapperPacket, TrackerWrapperPacket,
 };
 use loguna::{LogMessage, LogReader, MessageId};
+use prost::Message;
 
 /// A parsed and displayable log entry.
 #[derive(Debug, Clone)]
@@ -139,8 +139,7 @@ impl App {
 
     pub fn page_down(&mut self) {
         if !self.filtered_indices.is_empty() {
-            self.selected =
-                (self.selected + self.page_size).min(self.filtered_indices.len() - 1);
+            self.selected = (self.selected + self.page_size).min(self.filtered_indices.len() - 1);
         }
     }
 
@@ -241,7 +240,9 @@ fn parse_message_display(msg: &LogMessage, base_ts: i64) -> (String, String) {
             );
             let detail = format!(
                 "Message Type: {}\nTimestamp: {} ns\nPayload: {} bytes",
-                msg.message_id, msg.timestamp_ns, msg.payload.len()
+                msg.message_id,
+                msg.timestamp_ns,
+                msg.payload.len()
             );
             (summary, detail)
         }
@@ -323,7 +324,10 @@ fn parse_vision_display(msg: &LogMessage, time_str: &str) -> (String, String) {
                     "  Field: {}x{}mm",
                     field.field_length, field.field_width
                 ));
-                detail_lines.push(format!("  Goal: {}x{}mm", field.goal_width, field.goal_depth));
+                detail_lines.push(format!(
+                    "  Goal: {}x{}mm",
+                    field.goal_width, field.goal_depth
+                ));
                 detail_lines.push(format!("  Boundary: {}mm", field.boundary_width));
                 detail_lines.push(format!("  Lines: {}", field.field_lines.len()));
                 detail_lines.push(format!("  Arcs: {}", field.field_arcs.len()));
@@ -407,9 +411,7 @@ fn parse_referee_display(msg: &LogMessage, time_str: &str) -> (String, String) {
                 for event in &referee.game_events {
                     let type_str = event
                         .r#type
-                        .and_then(|t| {
-                            loguna::proto::game_event::Type::try_from(t).ok()
-                        })
+                        .and_then(|t| loguna::proto::game_event::Type::try_from(t).ok())
                         .map(|t| format!("{t:?}"))
                         .unwrap_or_else(|| "?".to_string());
                     detail_lines.push(format!("  - {type_str}"));
@@ -452,7 +454,9 @@ fn parse_tracker_display(msg: &LogMessage, time_str: &str) -> (String, String) {
                     let pos = &ball.pos;
                     detail_lines.push(format!(
                         "  Ball {i}: ({:.3}, {:.3}, {:.3})m vis={:.2}",
-                        pos.x, pos.y, pos.z,
+                        pos.x,
+                        pos.y,
+                        pos.z,
                         ball.visibility.unwrap_or(0.0)
                     ));
                 }

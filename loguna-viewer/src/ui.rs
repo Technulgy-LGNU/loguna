@@ -1,7 +1,4 @@
-use ratatui::{
-    prelude::*,
-    widgets::*,
-};
+use ratatui::{prelude::*, widgets::*};
 
 use crate::app::{App, Tab};
 
@@ -10,7 +7,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // title bar
-            Constraint::Min(0),   // main area
+            Constraint::Min(0),    // main area
             Constraint::Length(1), // status bar
         ])
         .split(f.area());
@@ -77,7 +74,11 @@ fn draw_message_list(f: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .title(format!(
                     " Messages [{}/{}] ",
-                    if app.filtered_indices.is_empty() { 0 } else { app.selected + 1 },
+                    if app.filtered_indices.is_empty() {
+                        0
+                    } else {
+                        app.selected + 1
+                    },
                     app.filtered_indices.len()
                 ))
                 .borders(Borders::ALL),
@@ -101,7 +102,11 @@ fn draw_detail_panel(f: &mut Frame, app: &App, area: Rect) {
             Tab::Detail => 1,
         })
         .style(Style::default().fg(Color::White))
-        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .divider(" | ");
 
     let tab_area = Layout::default()
@@ -118,7 +123,10 @@ fn draw_detail_panel(f: &mut Frame, app: &App, area: Rect) {
                     format!("Message #{}", entry.index),
                     format!("Type: {}", entry.raw.message_id),
                     format!("Timestamp: {} ns", entry.raw.timestamp_ns),
-                    format!("Relative: {:.6}s", (entry.raw.timestamp_ns - app.base_timestamp_ns) as f64 / 1e9),
+                    format!(
+                        "Relative: {:.6}s",
+                        (entry.raw.timestamp_ns - app.base_timestamp_ns) as f64 / 1e9
+                    ),
                     format!("Payload Size: {} bytes", entry.raw.payload.len()),
                     String::new(),
                 ];
@@ -128,12 +136,21 @@ fn draw_detail_panel(f: &mut Frame, app: &App, area: Rect) {
             Tab::Detail => {
                 // Show hex dump of first 256 bytes
                 let bytes = &entry.raw.payload;
-                let mut lines = vec![format!("Raw payload ({} bytes):", bytes.len()), String::new()];
+                let mut lines = vec![
+                    format!("Raw payload ({} bytes):", bytes.len()),
+                    String::new(),
+                ];
                 for chunk in bytes.chunks(16).take(16) {
                     let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
                     let ascii: String = chunk
                         .iter()
-                        .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' })
+                        .map(|&b| {
+                            if (0x20..0x7f).contains(&b) {
+                                b as char
+                            } else {
+                                '.'
+                            }
+                        })
                         .collect();
                     lines.push(format!("{:<48}  {}", hex.join(" "), ascii));
                 }
@@ -154,13 +171,12 @@ fn draw_detail_panel(f: &mut Frame, app: &App, area: Rect) {
             .wrap(Wrap { trim: false });
         f.render_widget(paragraph, tab_area[1]);
     } else {
-        let paragraph = Paragraph::new("No message selected")
-            .block(
-                Block::default()
-                    .title(" Detail ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            );
+        let paragraph = Paragraph::new("No message selected").block(
+            Block::default()
+                .title(" Detail ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
         f.render_widget(paragraph, tab_area[1]);
     }
 }
@@ -181,10 +197,30 @@ fn draw_filter_popup(f: &mut Frame, app: &App) {
     ];
 
     let filter_items = [
-        ("1", loguna::MessageId::Vision2014, "Vision2014", Color::Green),
-        ("2", loguna::MessageId::Referee2013, "Referee2013", Color::Yellow),
-        ("3", loguna::MessageId::VisionTracker2020, "Tracker2020", Color::Blue),
-        ("4", loguna::MessageId::Vision2010, "Vision2010", Color::DarkGray),
+        (
+            "1",
+            loguna::MessageId::Vision2014,
+            "Vision2014",
+            Color::Green,
+        ),
+        (
+            "2",
+            loguna::MessageId::Referee2013,
+            "Referee2013",
+            Color::Yellow,
+        ),
+        (
+            "3",
+            loguna::MessageId::VisionTracker2020,
+            "Tracker2020",
+            Color::Blue,
+        ),
+        (
+            "4",
+            loguna::MessageId::Vision2010,
+            "Vision2010",
+            Color::DarkGray,
+        ),
     ];
 
     for (key, msg_type, name, color) in &filter_items {
@@ -196,7 +232,10 @@ fn draw_filter_popup(f: &mut Frame, app: &App) {
             .map(|(_, c)| *c)
             .unwrap_or(0);
         lines.push(Line::from(vec![
-            Span::styled(format!("[{check}] "), Style::default().fg(if enabled { Color::Green } else { Color::Red })),
+            Span::styled(
+                format!("[{check}] "),
+                Style::default().fg(if enabled { Color::Green } else { Color::Red }),
+            ),
             Span::styled(format!("{key}: "), Style::default().fg(Color::White)),
             Span::styled(format!("{name}"), Style::default().fg(*color)),
             Span::styled(format!(" ({count})"), Style::default().fg(Color::DarkGray)),
@@ -221,9 +260,10 @@ fn draw_filter_popup(f: &mut Frame, app: &App) {
 }
 
 fn draw_status_bar(f: &mut Frame, _app: &App, area: Rect) {
-    let help = " q:Quit  ↑↓/jk:Navigate  PgUp/PgDn:Page  Enter:Detail  Tab:Switch  f:Filters  1-4:Toggle ";
-    let paragraph = Paragraph::new(help)
-        .style(Style::default().fg(Color::White).bg(Color::DarkGray));
+    let help =
+        " q:Quit  ↑↓/jk:Navigate  PgUp/PgDn:Page  Enter:Detail  Tab:Switch  f:Filters  1-4:Toggle ";
+    let paragraph =
+        Paragraph::new(help).style(Style::default().fg(Color::White).bg(Color::DarkGray));
     f.render_widget(paragraph, area);
 }
 
