@@ -1,27 +1,36 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use loguna::proto::{
     referee::{Command, Stage},
     Referee, SslWrapperPacket, TrackerWrapperPacket,
 };
-use loguna::{LogMessage, LogReader, MessageId};
+use loguna::{LogMessage, LogMessageInfo, LogReader, MessageId, ReadProgress};
 use prost::Message;
 
-/// A parsed and displayable log entry.
 #[derive(Debug, Clone)]
-pub struct LogEntry {
-    /// Index in the original (unfiltered) message list.
+pub struct LogEntryMeta {
     pub index: usize,
-    /// The raw log message.
-    pub raw: LogMessage,
-    /// A human-readable summary line for the list view.
+    pub offset: Option<u64>,
+    pub info: LogMessageInfo,
     pub summary: String,
-    /// Detailed information shown in the detail panel.
+}
+
+#[derive(Debug, Clone)]
+pub struct LogEntryDetail {
+    pub index: usize,
+    pub raw: LogMessage,
     pub detail: String,
 }
 
-/// Which tab is active in the detail view.
+#[derive(Debug, Clone)]
+pub struct LoadingState {
+    pub filename: String,
+    pub progress: ReadProgress,
+    pub messages_loaded: usize,
+    pub phase: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Overview,
@@ -29,57 +38,118 @@ pub enum Tab {
 }
 
 pub struct App {
-    /// All loaded log entries (unfiltered).
-    pub all_entries: Vec<LogEntry>,
-    /// Indices into `all_entries` that pass the current filter.
+    path: PathBuf,
+    pub all_entries: Vec<LogEntryMeta>,
     pub filtered_indices: Vec<usize>,
-    /// Currently selected index in `filtered_indices`.
     pub selected: usize,
-    /// Whether the detail panel is shown.
     pub show_detail: bool,
-    /// Current detail tab.
     pub tab: Tab,
-    /// Which message types are enabled (shown).
     pub enabled_types: HashSet<MessageId>,
-    /// Whether filter menu is shown.
     pub show_filter_menu: bool,
-    /// Total messages loaded.
     pub total_messages: usize,
-    /// Log file name for display.
     pub filename: String,
-    /// First timestamp in the log (for relative time display).
     pub base_timestamp_ns: i64,
-    /// Page size for page up/down.
     pub page_size: usize,
+    type_counts: Vec<(MessageId, usize)>,
+    indexed_reader: Option<LogReader>,
+    detail_cache: Option<LogEntryDetail>,
 }
 
 impl App {
-    /// Load a log file and parse all messages.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
+    pub fn load_with_progress<F>(path: &Path, mut on_progress: F) -> anyhow::Result<Self>
+    where
+        F: FnMut(&LoadingState) -> anyhow::Result<()>,
+    {
         let filename = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
 
-        let mut reader = LogReader::open(path)?;
-        let messages = reader.read_all()?;
-        let total_messages = messages.len();
+        let mut scan_reader = LogReader::open(path)?;
+        let indexed_offsets = if scan_reader.is_indexed() {
+            Some(scan_reader.read_index()?)
+        } else {
+            None
+        };
 
-        let base_timestamp_ns = messages.first().map(|m| m.timestamp_ns).unwrap_or(0);
+        let mut all_entries = Vec::new();
+        let mut type_counts = default_type_counts();
+        let mut base_timestamp_ns = 0;
 
-        let all_entries: Vec<LogEntry> = messages
-            .into_iter()
-            .enumerate()
-            .map(|(i, msg)| {
-                let (summary, detail) = parse_message_display(&msg, base_timestamp_ns);
-                LogEntry {
-                    index: i,
-                    raw: msg,
-                    summary,
-                    detail,
+        match indexed_offsets {
+            Some(offsets) => {
+                let mut indexed_reader = LogReader::open(path)?;
+                let total_offsets = offsets.len();
+                let total_bytes = indexed_reader.total_bytes();
+                for (i, offset) in offsets.into_iter().enumerate() {
+                    let message = indexed_reader.read_message_at(offset)?;
+                    let info = LogMessageInfo {
+                        timestamp_ns: message.timestamp_ns,
+                        message_id: message.message_id,
+                        payload_len: message.payload.len(),
+                    };
+                    if i == 0 {
+                        base_timestamp_ns = info.timestamp_ns;
+                    }
+                    increment_type_count(&mut type_counts, info.message_id);
+                    all_entries.push(LogEntryMeta {
+                        index: i,
+                        offset: Some(offset),
+                        summary: parse_message_summary(&message, base_timestamp_ns),
+                        info,
+                    });
+
+                    if i % 512 == 0 || i + 1 == total_offsets {
+                        let bytes_read = (offset + 16 + info.payload_len as u64).min(total_bytes);
+                        on_progress(&LoadingState {
+                            filename: filename.clone(),
+                            progress: ReadProgress {
+                                bytes_read,
+                                total_bytes,
+                            },
+                            messages_loaded: i + 1,
+                            phase: "Reading indexed headers".to_string(),
+                        })?;
+                    }
                 }
-            })
-            .collect();
+            }
+            None => {
+                while let Some(message) = scan_reader.next_message()? {
+                    let info = LogMessageInfo {
+                        timestamp_ns: message.timestamp_ns,
+                        message_id: message.message_id,
+                        payload_len: message.payload.len(),
+                    };
+                    let index = all_entries.len();
+                    if index == 0 {
+                        base_timestamp_ns = info.timestamp_ns;
+                    }
+                    increment_type_count(&mut type_counts, info.message_id);
+                    all_entries.push(LogEntryMeta {
+                        index,
+                        offset: None,
+                        summary: parse_message_summary(&message, base_timestamp_ns),
+                        info,
+                    });
+
+                    if index % 512 == 0 {
+                        on_progress(&LoadingState {
+                            filename: filename.clone(),
+                            progress: scan_reader.progress(),
+                            messages_loaded: index + 1,
+                            phase: "Scanning log stream".to_string(),
+                        })?;
+                    }
+                }
+
+                on_progress(&LoadingState {
+                    filename: filename.clone(),
+                    progress: scan_reader.progress(),
+                    messages_loaded: all_entries.len(),
+                    phase: "Scanning log stream".to_string(),
+                })?;
+            }
+        }
 
         let mut enabled_types = HashSet::new();
         enabled_types.insert(MessageId::Vision2014);
@@ -91,6 +161,7 @@ impl App {
         enabled_types.insert(MessageId::Index2021);
 
         let mut app = App {
+            path: path.to_path_buf(),
             all_entries,
             filtered_indices: Vec::new(),
             selected: 0,
@@ -98,11 +169,19 @@ impl App {
             tab: Tab::Overview,
             enabled_types,
             show_filter_menu: false,
-            total_messages,
+            total_messages: 0,
             filename,
             base_timestamp_ns,
             page_size: 20,
+            type_counts,
+            indexed_reader: if scan_reader.is_indexed() {
+                Some(LogReader::open(path)?)
+            } else {
+                None
+            },
+            detail_cache: None,
         };
+        app.total_messages = app.all_entries.len();
         app.update_filter();
         Ok(app)
     }
@@ -112,7 +191,7 @@ impl App {
             .all_entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| self.enabled_types.contains(&e.raw.message_id))
+            .filter(|(_, e)| self.enabled_types.contains(&e.info.message_id))
             .map(|(i, _)| i)
             .collect();
 
@@ -121,10 +200,51 @@ impl App {
         }
     }
 
-    pub fn selected_entry(&self) -> Option<&LogEntry> {
+    pub fn selected_entry(&self) -> Option<&LogEntryMeta> {
         self.filtered_indices
             .get(self.selected)
             .and_then(|&i| self.all_entries.get(i))
+    }
+
+    pub fn selected_entry_detail(&mut self) -> anyhow::Result<Option<&LogEntryDetail>> {
+        let Some(entry) = self.selected_entry().cloned() else {
+            self.detail_cache = None;
+            return Ok(None);
+        };
+
+        if self
+            .detail_cache
+            .as_ref()
+            .map(|cached| cached.index == entry.index)
+            .unwrap_or(false)
+        {
+            return Ok(self.detail_cache.as_ref());
+        }
+
+        let raw = if let Some(offset) = entry.offset {
+            self.indexed_reader
+                .as_mut()
+                .expect("indexed reader missing for indexed entry")
+                .read_message_at(offset)?
+        } else {
+            let mut reader = LogReader::open(&self.path)?;
+            let mut current = 0usize;
+            loop {
+                match reader.next_message()? {
+                    Some(message) if current == entry.index => break message,
+                    Some(_) => current += 1,
+                    None => anyhow::bail!("selected message index {} not found", entry.index),
+                }
+            }
+        };
+
+        let (_, detail) = parse_message_display(&raw, self.base_timestamp_ns);
+        self.detail_cache = Some(LogEntryDetail {
+            index: entry.index,
+            raw,
+            detail,
+        });
+        Ok(self.detail_cache.as_ref())
     }
 
     pub fn next(&mut self) {
@@ -169,7 +289,7 @@ impl App {
     }
 
     pub fn prev_tab(&mut self) {
-        self.next_tab(); // only 2 tabs
+        self.next_tab();
     }
 
     pub fn toggle_filter_menu(&mut self) {
@@ -185,34 +305,57 @@ impl App {
         self.update_filter();
     }
 
-    /// Get statistics about message type distribution.
     pub fn type_counts(&self) -> Vec<(MessageId, usize)> {
-        let types = [
-            MessageId::Vision2014,
-            MessageId::Referee2013,
-            MessageId::VisionTracker2020,
-            MessageId::Vision2010,
-            MessageId::Blank,
-            MessageId::Unknown,
-            MessageId::Index2021,
-        ];
-        types
+        self.type_counts
             .iter()
-            .map(|&t| {
-                let count = self
-                    .all_entries
-                    .iter()
-                    .filter(|e| e.raw.message_id == t)
-                    .count();
-                (t, count)
-            })
-            .filter(|(_, c)| *c > 0)
+            .copied()
+            .filter(|(_, count)| *count > 0)
             .collect()
     }
 }
 
-/// Format a relative timestamp from nanoseconds.
-fn format_relative_time(ns: i64) -> String {
+fn default_type_counts() -> Vec<(MessageId, usize)> {
+    vec![
+        (MessageId::Vision2014, 0),
+        (MessageId::Referee2013, 0),
+        (MessageId::VisionTracker2020, 0),
+        (MessageId::Vision2010, 0),
+        (MessageId::Blank, 0),
+        (MessageId::Unknown, 0),
+        (MessageId::Index2021, 0),
+    ]
+}
+
+fn increment_type_count(type_counts: &mut [(MessageId, usize)], message_id: MessageId) {
+    if let Some((_, count)) = type_counts.iter_mut().find(|(id, _)| *id == message_id) {
+        *count += 1;
+    } else {
+        unreachable!("message type list is expected to be exhaustive");
+    }
+}
+
+fn format_message_summary(message_id: MessageId, timestamp_ns: i64, payload_len: usize, base_ts: i64) -> String {
+    let relative_ns = timestamp_ns - base_ts;
+    let time_str = format_relative_time(relative_ns);
+    format!(
+        "{time_str}  {:<20}  {} bytes",
+        message_id.to_string(),
+        payload_len
+    )
+}
+
+fn parse_message_summary(msg: &LogMessage, base_ts: i64) -> String {
+    let time_str = format_relative_time(msg.timestamp_ns - base_ts);
+
+    match msg.message_id {
+        MessageId::Vision2014 => parse_vision_summary(msg, &time_str),
+        MessageId::Referee2013 => parse_referee_summary(msg, &time_str),
+        MessageId::VisionTracker2020 => parse_tracker_summary(msg, &time_str),
+        _ => format_message_summary(msg.message_id, msg.timestamp_ns, msg.payload.len(), base_ts),
+    }
+}
+
+pub fn format_relative_time(ns: i64) -> String {
     let total_secs = ns as f64 / 1_000_000_000.0;
     let hours = (total_secs / 3600.0) as u32;
     let mins = ((total_secs % 3600.0) / 60.0) as u32;
@@ -350,6 +493,38 @@ fn parse_vision_display(msg: &LogMessage, time_str: &str) -> (String, String) {
     }
 }
 
+fn parse_vision_summary(msg: &LogMessage, time_str: &str) -> String {
+    match SslWrapperPacket::decode(msg.payload.as_slice()) {
+        Ok(wrapper) => {
+            let mut parts = Vec::new();
+
+            if let Some(ref det) = wrapper.detection {
+                parts.push(format!(
+                    "cam {} frame {} | {}B {}Y {}B",
+                    det.camera_id,
+                    det.frame_number,
+                    det.balls.len(),
+                    det.robots_yellow.len(),
+                    det.robots_blue.len()
+                ));
+            }
+
+            if wrapper.geometry.is_some() {
+                parts.push("geometry".to_string());
+            }
+
+            let info = if parts.is_empty() {
+                "empty".to_string()
+            } else {
+                parts.join(" | ")
+            };
+
+            format!("{time_str}  Vision2014          {info}")
+        }
+        Err(_) => format!("{time_str}  Vision2014          <decode error>"),
+    }
+}
+
 fn parse_referee_display(msg: &LogMessage, time_str: &str) -> (String, String) {
     match Referee::decode(msg.payload.as_slice()) {
         Ok(referee) => {
@@ -428,6 +603,21 @@ fn parse_referee_display(msg: &LogMessage, time_str: &str) -> (String, String) {
     }
 }
 
+fn parse_referee_summary(msg: &LogMessage, time_str: &str) -> String {
+    match Referee::decode(msg.payload.as_slice()) {
+        Ok(referee) => {
+            let command = Command::try_from(referee.command)
+                .map(|c| format!("{c:?}"))
+                .unwrap_or_else(|_| format!("Cmd({})", referee.command));
+            format!(
+                "{time_str}  Referee              {command} | {} {} - {} {}",
+                referee.yellow.name, referee.yellow.score, referee.blue.score, referee.blue.name
+            )
+        }
+        Err(_) => format!("{time_str}  Referee              <decode error>"),
+    }
+}
+
 fn parse_tracker_display(msg: &LogMessage, time_str: &str) -> (String, String) {
     match TrackerWrapperPacket::decode(msg.payload.as_slice()) {
         Ok(wrapper) => {
@@ -487,5 +677,26 @@ fn parse_tracker_display(msg: &LogMessage, time_str: &str) -> (String, String) {
             let detail = format!("Decode error: {e}");
             (summary, detail)
         }
+    }
+}
+
+fn parse_tracker_summary(msg: &LogMessage, time_str: &str) -> String {
+    match TrackerWrapperPacket::decode(msg.payload.as_slice()) {
+        Ok(wrapper) => {
+            let source = wrapper.source_name.as_deref().unwrap_or("unknown");
+            let mut parts = vec![format!("src={source}")];
+
+            if let Some(ref frame) = wrapper.tracked_frame {
+                parts.push(format!(
+                    "frame {} | {}B {}R",
+                    frame.frame_number,
+                    frame.balls.len(),
+                    frame.robots.len()
+                ));
+            }
+
+            format!("{time_str}  Tracker              {}", parts.join(" | "))
+        }
+        Err(_) => format!("{time_str}  Tracker              <decode error>"),
     }
 }

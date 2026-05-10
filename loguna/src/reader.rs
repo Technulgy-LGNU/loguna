@@ -9,6 +9,31 @@ use thiserror::Error;
 use crate::message::{LogMessage, MessageId};
 use crate::{FILE_HEADER, FILE_VERSION, INDEXED_MARKER};
 
+/// Lightweight metadata about a log message.
+#[derive(Debug, Clone, Copy)]
+pub struct LogMessageInfo {
+    pub timestamp_ns: i64,
+    pub message_id: MessageId,
+    pub payload_len: usize,
+}
+
+/// Progress information for an in-flight read.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadProgress {
+    pub bytes_read: u64,
+    pub total_bytes: u64,
+}
+
+impl ReadProgress {
+    pub fn fraction(self) -> f64 {
+        if self.total_bytes == 0 {
+            0.0
+        } else {
+            self.bytes_read as f64 / self.total_bytes as f64
+        }
+    }
+}
+
 /// Errors that can occur when reading log files.
 #[derive(Debug, Error)]
 pub enum ReadError {
@@ -33,8 +58,8 @@ pub enum ReadError {
 
 /// A reader that can be either buffered file or buffered gzip.
 enum ReaderInner {
-    Plain(BufReader<File>),
-    Gzip(BufReader<GzDecoder<File>>),
+    Plain(BufReader<CountingReader<File>>),
+    Gzip(BufReader<GzDecoder<CountingReader<File>>>),
 }
 
 impl Read for ReaderInner {
@@ -43,6 +68,49 @@ impl Read for ReaderInner {
             ReaderInner::Plain(r) => r.read(buf),
             ReaderInner::Gzip(r) => r.read(buf),
         }
+    }
+}
+
+impl ReaderInner {
+    fn bytes_read(&self) -> u64 {
+        match self {
+            ReaderInner::Plain(reader) => reader.get_ref().bytes_read(),
+            ReaderInner::Gzip(reader) => reader.get_ref().get_ref().bytes_read(),
+        }
+    }
+}
+
+struct CountingReader<R> {
+    inner: R,
+    bytes_read: u64,
+}
+
+impl<R> CountingReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            bytes_read: 0,
+        }
+    }
+
+    fn bytes_read(&self) -> u64 {
+        self.bytes_read
+    }
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.bytes_read += read as u64;
+        Ok(read)
+    }
+}
+
+impl<R: Seek> Seek for CountingReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let offset = self.inner.seek(pos)?;
+        self.bytes_read = offset;
+        Ok(offset)
     }
 }
 
@@ -64,6 +132,7 @@ pub struct LogReader {
     /// Only available for non-compressed files.
     file: Option<File>,
     compressed: bool,
+    total_bytes: u64,
 }
 
 impl LogReader {
@@ -75,20 +144,25 @@ impl LogReader {
         let path = path.as_ref();
         let compressed = path.extension().map_or(false, |ext| ext == "gz");
 
+        let total_bytes = path.metadata()?.len();
         let file = File::open(path)?;
 
         let (reader, random_access_file) = if compressed {
-            let gz = GzDecoder::new(file);
+            let gz = GzDecoder::new(CountingReader::new(file));
             (ReaderInner::Gzip(BufReader::new(gz)), None)
         } else {
             let random_file = File::open(path)?; // second handle for random access
-            (ReaderInner::Plain(BufReader::new(file)), Some(random_file))
+            (
+                ReaderInner::Plain(BufReader::new(CountingReader::new(file))),
+                Some(random_file),
+            )
         };
 
         let mut log_reader = LogReader {
             reader,
             file: random_access_file,
             compressed,
+            total_bytes,
         };
 
         log_reader.verify_header()?;
@@ -98,6 +172,24 @@ impl LogReader {
     /// Whether the underlying file is gzip-compressed.
     pub fn is_compressed(&self) -> bool {
         self.compressed
+    }
+
+    /// Total input size in bytes.
+    pub fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+
+    /// Bytes consumed from the input stream.
+    pub fn bytes_read(&self) -> u64 {
+        self.reader.bytes_read()
+    }
+
+    /// Current read progress.
+    pub fn progress(&self) -> ReadProgress {
+        ReadProgress {
+            bytes_read: self.bytes_read(),
+            total_bytes: self.total_bytes,
+        }
     }
 
     /// Checks whether the file has an index appended at the end.
@@ -138,30 +230,32 @@ impl LogReader {
     ///
     /// Returns `Ok(None)` when the end of the file is reached.
     pub fn next_message(&mut self) -> Result<Option<LogMessage>, ReadError> {
-        // Try to read the timestamp; EOF here means we're done
-        let timestamp_ns = match self.reader.read_i64::<BigEndian>() {
-            Ok(v) => v,
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(e) => return Err(ReadError::Io(e)),
+        let Some(info) = read_message_info(&mut self.reader)? else {
+            return Ok(None);
         };
 
-        let message_id_raw = self.reader.read_i32::<BigEndian>()?;
-        let message_id = MessageId::from_i32(message_id_raw)
-            .ok_or(ReadError::UnknownMessageId { id: message_id_raw })?;
-
-        let length = self.reader.read_i32::<BigEndian>()?;
-        if length < 0 {
-            return Err(ReadError::InvalidLength { length });
-        }
-
-        let mut payload = vec![0u8; length as usize];
+        let mut payload = vec![0u8; info.payload_len];
         self.reader.read_exact(&mut payload)?;
 
         Ok(Some(LogMessage {
-            timestamp_ns,
-            message_id,
+            timestamp_ns: info.timestamp_ns,
+            message_id: info.message_id,
             payload,
         }))
+    }
+
+    /// Reads lightweight metadata for the next message and skips its payload.
+    pub fn next_message_info(&mut self) -> Result<Option<LogMessageInfo>, ReadError> {
+        let Some(info) = read_message_info(&mut self.reader)? else {
+            return Ok(None);
+        };
+
+        io::copy(
+            &mut self.reader.by_ref().take(info.payload_len as u64),
+            &mut io::sink(),
+        )?;
+
+        Ok(Some(info))
     }
 
     /// Reads a message at a specific byte offset in the file.
@@ -179,31 +273,20 @@ impl LogReader {
 
         reader.seek(SeekFrom::Start(offset))?;
 
-        let timestamp_ns = reader.read_i64::<BigEndian>()?;
-        let message_id_raw = reader.read_i32::<BigEndian>()?;
-        let message_id = MessageId::from_i32(message_id_raw)
-            .ok_or(ReadError::UnknownMessageId { id: message_id_raw })?;
+        let info = read_message_info_required(reader)?;
 
-        let length = reader.read_i32::<BigEndian>()?;
-        if length < 0 {
-            return Err(ReadError::InvalidLength { length });
-        }
-
-        let mut payload = vec![0u8; length as usize];
+        let mut payload = vec![0u8; info.payload_len];
         reader.read_exact(&mut payload)?;
 
         Ok(LogMessage {
-            timestamp_ns,
-            message_id,
+            timestamp_ns: info.timestamp_ns,
+            message_id: info.message_id,
             payload,
         })
     }
 
-    /// Reads only the timestamp and message type at a given offset, without reading the payload.
-    ///
-    /// This is useful for quickly scanning through an indexed file.
-    /// Only available for non-compressed files.
-    pub fn read_header_at(&mut self, offset: u64) -> Result<(i64, MessageId), ReadError> {
+    /// Reads timestamp, message type, and payload length at a given offset.
+    pub fn read_info_at(&mut self, offset: u64) -> Result<LogMessageInfo, ReadError> {
         if self.compressed {
             return Err(ReadError::NoRandomAccessForCompressed);
         }
@@ -214,13 +297,16 @@ impl LogReader {
         };
 
         reader.seek(SeekFrom::Start(offset))?;
+        read_message_info_required(reader)
+    }
 
-        let timestamp_ns = reader.read_i64::<BigEndian>()?;
-        let message_id_raw = reader.read_i32::<BigEndian>()?;
-        let message_id = MessageId::from_i32(message_id_raw)
-            .ok_or(ReadError::UnknownMessageId { id: message_id_raw })?;
-
-        Ok((timestamp_ns, message_id))
+    /// Reads only the timestamp and message type at a given offset, without reading the payload.
+    ///
+    /// This is useful for quickly scanning through an indexed file.
+    /// Only available for non-compressed files.
+    pub fn read_header_at(&mut self, offset: u64) -> Result<(i64, MessageId), ReadError> {
+        let info = self.read_info_at(offset)?;
+        Ok((info.timestamp_ns, info.message_id))
     }
 
     /// Reads the index from the end of the file.
@@ -271,26 +357,17 @@ impl LogReader {
     ///
     /// Returns the total number of bytes skipped (header + payload), or `Ok(None)` at EOF.
     pub fn skip_message(&mut self) -> Result<Option<usize>, ReadError> {
-        // Read and discard 12 bytes (timestamp + message_id)
-        let mut header = [0u8; 12];
-        match self.reader.read_exact(&mut header) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(e) => return Err(ReadError::Io(e)),
-        }
-
-        let length = self.reader.read_i32::<BigEndian>()?;
-        if length < 0 {
-            return Err(ReadError::InvalidLength { length });
-        }
+        let Some(info) = read_message_info(&mut self.reader)? else {
+            return Ok(None);
+        };
 
         // Discard the payload
         io::copy(
-            &mut self.reader.by_ref().take(length as u64),
+            &mut self.reader.by_ref().take(info.payload_len as u64),
             &mut io::sink(),
         )?;
 
-        Ok(Some(16 + length as usize))
+        Ok(Some(16 + info.payload_len))
     }
 
     /// Collects all messages into a `Vec`.
@@ -326,6 +403,106 @@ impl LogReader {
         }
 
         Ok(())
+    }
+}
+
+fn read_message_info<R: Read>(reader: &mut R) -> Result<Option<LogMessageInfo>, ReadError> {
+    let timestamp_ns = match reader.read_i64::<BigEndian>() {
+        Ok(v) => v,
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(ReadError::Io(e)),
+    };
+
+    let message_id_raw = reader.read_i32::<BigEndian>()?;
+    let message_id = MessageId::from_i32(message_id_raw)
+        .ok_or(ReadError::UnknownMessageId { id: message_id_raw })?;
+
+    let length = reader.read_i32::<BigEndian>()?;
+    if length < 0 {
+        return Err(ReadError::InvalidLength { length });
+    }
+
+    Ok(Some(LogMessageInfo {
+        timestamp_ns,
+        message_id,
+        payload_len: length as usize,
+    }))
+}
+
+fn read_message_info_required<R: Read>(reader: &mut R) -> Result<LogMessageInfo, ReadError> {
+    read_message_info(reader)?.ok_or_else(|| {
+        ReadError::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "unexpected end of file while reading message header",
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::{LogMessage, LogWriter};
+
+    #[test]
+    fn next_message_info_skips_payload_without_allocating_messages() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sample.log");
+        write_sample_log(&path);
+
+        let mut reader = LogReader::open(&path).unwrap();
+        let first = reader.next_message_info().unwrap().unwrap();
+        let second = reader.next_message_info().unwrap().unwrap();
+
+        assert_eq!(first.timestamp_ns, 100);
+        assert_eq!(first.message_id, MessageId::Vision2014);
+        assert_eq!(first.payload_len, 3);
+        assert_eq!(second.timestamp_ns, 200);
+        assert_eq!(second.message_id, MessageId::Referee2013);
+        assert_eq!(second.payload_len, 2);
+        assert!(reader.next_message_info().unwrap().is_none());
+    }
+
+    #[test]
+    fn read_info_at_reports_header_fields() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sample.log");
+        write_sample_log(&path);
+
+        let mut reader = LogReader::open(&path).unwrap();
+        let first = reader.read_info_at(crate::HEADER_SIZE as u64).unwrap();
+        let second = reader
+            .read_info_at(crate::HEADER_SIZE as u64 + 16 + 3)
+            .unwrap();
+
+        assert_eq!(first.timestamp_ns, 100);
+        assert_eq!(first.message_id, MessageId::Vision2014);
+        assert_eq!(first.payload_len, 3);
+        assert_eq!(second.timestamp_ns, 200);
+        assert_eq!(second.message_id, MessageId::Referee2013);
+        assert_eq!(second.payload_len, 2);
+    }
+
+    fn write_sample_log(path: &Path) {
+        let mut writer = LogWriter::create(path).unwrap();
+        writer
+            .write_message(&LogMessage {
+                timestamp_ns: 100,
+                message_id: MessageId::Vision2014,
+                payload: vec![1, 2, 3],
+            })
+            .unwrap();
+        writer
+            .write_message(&LogMessage {
+                timestamp_ns: 200,
+                message_id: MessageId::Referee2013,
+                payload: vec![4, 5],
+            })
+            .unwrap();
+        writer.close().unwrap();
     }
 }
 

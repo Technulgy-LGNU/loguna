@@ -13,7 +13,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 
-use app::App;
+use app::{App, LoadingState};
 
 #[derive(Parser)]
 #[command(
@@ -146,15 +146,16 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_tui(log_file: &PathBuf) -> anyhow::Result<()> {
-    let app = App::load(log_file)?;
-
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_app(&mut terminal, app);
+    let result = (|| -> anyhow::Result<()> {
+        let app = App::load_with_progress(log_file, |state| draw_loading(&mut terminal, state))?;
+        run_app(&mut terminal, app)
+    })();
 
     disable_raw_mode()?;
     execute!(
@@ -172,9 +173,17 @@ fn run_tui(log_file: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn draw_loading<B: Backend>(
+    terminal: &mut Terminal<B>,
+    state: &LoadingState,
+) -> anyhow::Result<()> {
+    terminal.draw(|f| ui::draw_loading(f, state))?;
+    Ok(())
+}
+
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> anyhow::Result<()> {
     loop {
-        terminal.draw(|f| ui::draw(f, &app))?;
+        terminal.draw(|f| ui::draw(f, &mut app))?;
 
         if let Event::Key(key) = event::read()? {
             match (key.modifiers, key.code) {

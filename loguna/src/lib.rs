@@ -43,7 +43,7 @@ mod reader;
 mod writer;
 
 pub use message::{LogMessage, MessageId};
-pub use reader::LogReader;
+pub use reader::{LogMessageInfo, LogReader, ReadProgress};
 pub use writer::LogWriter;
 
 /// Generated protobuf types for SSL messages.
